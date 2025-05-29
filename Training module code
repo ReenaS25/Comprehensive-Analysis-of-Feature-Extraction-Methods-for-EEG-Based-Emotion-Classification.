@@ -1,0 +1,169 @@
+#training
+
+
+import os
+import numpy as np
+import pandas as pd
+import pywt
+import joblib  # For saving and loading scaler
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler, LabelEncoder
+from sklearn.svm import SVC
+from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.metrics import accuracy_score, classification_report
+import tensorflow as tf
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense, LSTM, Dropout
+
+# Suppress TensorFlow logs
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
+
+# File Paths
+data_path = r"C:\Users\Ragav\OneDrive\Desktop\New folder"  # Change this to your dataset path
+scaler_path = r"C:\Users\Ragav\OneDrive\Desktop\doc\eeg_scaler.pkl"  # Save scaler
+
+# EEG Channels for Emotion Detection
+eeg_channels = ["AF3", "AF4", "F3", "F4", "F7", "F8", "FC5", "FC6", "O1", "O2", "P7", "P8", "T7", "T8"]
+
+# Load EEG dataset
+if os.path.exists(data_path):
+    df = pd.read_csv(data_path)
+else:
+    df = pd.DataFrame(columns=eeg_channels + ["Label"])
+
+# Check if dataset is empty
+if df.empty:
+    print("The dataset is empty. Please provide valid data.")
+    exit()
+
+# Manual Data Input (Step-by-Step)
+print("\nDo you want to add manual EEG data? (yes/no)")
+if input().strip().lower() == "yes":
+    try:
+        count = int(input("Enter the number of EEG data entries you want to add: ").strip())
+        for _ in range(count):
+            eeg_input = []
+            print("\nEnter EEG values one by one:")
+            for channel in eeg_channels:
+                value = float(input(f"Enter {channel} value: ").strip())
+                eeg_input.append(value)
+
+            emotion_label = input("Enter the emotion label (Happy, Sad, Angry, Relaxed, Fear, Excited, Neutral): ").strip()
+
+            if emotion_label not in ["Happy", "Sad", "Angry", "Relaxed", "Fear", "Excited", "Neutral"]:
+                print("Error: Invalid emotion label.")
+            else:
+                new_data = pd.DataFrame([eeg_input + [emotion_label]], columns=df.columns)
+                df = pd.concat([df, new_data], ignore_index=True)  # Append new data
+                print("✅ Data entry added successfully!")
+
+        df.to_csv(data_path, index=False)  # Save updated dataset
+        print("✅ All manual data entries added successfully!")
+
+    except ValueError:
+        print("Error: Invalid input. Please enter numeric values for EEG data and a valid count.")
+
+# Encode emotion labels
+label_encoder = LabelEncoder()
+df["Label"] = label_encoder.fit_transform(df["Label"])
+
+# Extract features and labels
+X = df.iloc[:, :-1].values  # EEG signals
+y = df["Label"].values  # Emotion labels
+
+# Apply Discrete Wavelet Transform (DWT) for feature extraction
+def extract_dwt_features(signal):
+    coeffs = pywt.wavedec(signal, 'db4', level=min(3, pywt.dwt_max_level(len(signal), pywt.Wavelet('db4').dec_len)))
+    features = [np.mean(c) for c in coeffs]  # Collect mean of each coefficient
+    return np.array(features)
+
+X_dwt = np.array([extract_dwt_features(sample) for sample in X])
+
+# Standardize features
+scaler = StandardScaler()
+X_scaled = scaler.fit_transform(X_dwt)
+
+# Save the scaler
+joblib.dump(scaler, scaler_path)
+
+# Split dataset
+X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, test_size=0.2, random_state=42)
+
+# Machine Learning Models
+svm_model = SVC(kernel='rbf')
+svm_model.fit(X_train, y_train)
+svm_pred = svm_model.predict(X_test)
+print("\nSVM Accuracy:", accuracy_score(y_test, svm_pred))
+print(classification_report(y_test, svm_pred))
+
+lda_model = LinearDiscriminantAnalysis()
+lda_model.fit(X_train, y_train)
+lda_pred = lda_model.predict(X_test)
+print("\nLDA Accuracy:", accuracy_score(y_test, lda_pred))
+print(classification_report(y_test, lda_pred))
+
+dt_model = DecisionTreeClassifier()
+dt_model.fit(X_train, y_train)
+dt_pred = dt_model.predict(X_test)
+print("\nDecision Tree Accuracy:", accuracy_score(y_test, dt_pred))
+print(classification_report(y_test, dt_pred))
+
+# Deep Learning Models (CNN/RNN)
+cnn_model = Sequential([
+    Dense(128, activation='relu', input_shape=(X_train.shape[1],)),
+    Dropout(0.5),
+    Dense(64, activation='relu'),
+    Dense(len(label_encoder.classes_), activation='softmax')
+])
+cnn_model.compile(optimizer='adam', loss='sparse_categorical_crossentropy', metrics=['accuracy'])
+
+# Train CNN Model with Epoch Display
+cnn_model.fit(X_train, y_train, epochs=10, batch_size=8, validation_data=(X_test, y_test), verbose=1)
+
+cnn_pred = np.argmax(cnn_model.predict(X_test), axis=1)
+print("\nCNN Accuracy:", accuracy_score(y_test, cnn_pred))
+print(classification_report(y_test, cnn_pred))
+
+# Prepare data for RNN
+X_train_rnn = X_train.reshape((X_train.shape[0], X_train.shape[1], 1))
+X_test_rnn = X_test.reshape((X_test.shape[0], X_test.shape[1], 1))
+
+rnn_model = Sequential([
+    LSTM(50, return_sequences=True, input_shape=(X_train.shape[1], 1)),
+    LSTM(50),
+    Dense(64, activation='relu'),
+    Dense(len(label_encoder.classes_), activation='softmax')
+])
+rnn_model.compile(optimizer='adam', loss='sparse_categorical_crossentropy', metrics=['accuracy'])
+
+# Train RNN Model with Epoch Display
+rnn_model.fit(X_train_rnn, y_train, epochs=10, batch_size=8, validation_data=(X_test_rnn, y_test), verbose=1)
+
+rnn_pred = np.argmax(rnn_model.predict(X_test_rnn), axis=1)
+print("\nRNN Accuracy:", accuracy_score(y_test, rnn_pred))
+print(classification_report(y_test, rnn_pred))
+
+# Save Models
+cnn_model.save(r"C:\Users\Ragav\OneDrive\Desktop\doc\eeg_cnn_model.h5")
+rnn_model.save(r"C:\Users\Ragav\OneDrive\Desktop\doc\eeg_rnn_model.h5")
+
+# Load and Apply Scaler for Future Use
+def preprocess_new_data():
+    """Preprocess new EEG data by taking manual input."""
+    loaded_scaler = joblib.load(scaler_path)
+    eeg_input = []
+    
+    print("\nEnter new EEG values one by one:")
+    for channel in eeg_channels:
+        value = float(input(f"Enter {channel} value: ").strip())
+        eeg_input.append(value)
+    
+    dwt_features = extract_dwt_features(eeg_input)
+    return loaded_scaler.transform([dwt_features])
+
+# Example of Preprocessing a New EEG Input
+print("\nDo you want to process a new EEG input? (yes/no)")
+if input().strip().lower() == "yes":
+    processed_input = preprocess_new_data()
+    print("Processed EEG Input:", processed_input)
